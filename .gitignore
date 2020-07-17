@@ -1,0 +1,6 @@
+env_FIS/
+__pycache__/
+.vscode
+.git
+FormatData/
+OriginData/
