@@ -1,20 +1,9 @@
-'''
-@Descripttion:从Excel读取财务数据，并保存至新的Excel文档或数据库 
-@version: 0.0.1
-@Author: Zefeng Neo Zhu
-@Date: 2020-07-10 10:19:10
-@LastEditors: Zefeng Neo Zhu
-@LastEditTime: 2020-07-16 18:38:01
-'''
-# -*- coding: UTF-8 -*-
-
-
 import xlwt
 import xlrd
-from xlutils.copy import copy;
+import xlutils
 import re 
 import pymysql
-#import psycopg2
+
 from decimal import Decimal, getcontext
 
 
@@ -169,7 +158,7 @@ def save_data_to_excel(data_list, filename='./FormatData/财务分析数据.xls'
 
     ''' 打开并读取原 Excel 文件中的数据 '''
     origin_data = xlrd.open_workbook(filename, formatting_info=True)
-    new_data = copy(wb=origin_data)
+    new_data = xlutils.copy(wb=origin_data)
     new_sheet = new_data.get_sheet(sheet_index)
 
     ''' 获取原 Excel 文档的最大行数 '''
@@ -187,7 +176,44 @@ def save_data_to_excel(data_list, filename='./FormatData/财务分析数据.xls'
     return "数据保存成功..."
 
 
-def save_data_to_database(data_list):
+def open_database():
+    """打开数据库
+
+    打开数据库用于读取或保存数据
+    
+
+    返回值
+    ------
+    cursor()
+        返回打开的数据库的游标”
+
+    """
+   
+    ''' 使用 pymysql 创建 MySQL 数据库连接 '''
+    FADB = pymysql.connect(
+        host='127.0.0.1',
+        port=3306,
+        db='finance_information_system',
+        user='root', 
+        password='330715', 
+    )
+
+    ''' 使用 psycopg2 创建 PostgreSQL 数据库连接 '''
+    #FADB = psycopg2.connect(
+    #    host='',
+    #    port='5432',
+    #    database='finance_analysis',
+    #    user='postgres',
+    #    password='330715'
+    #)
+
+    ''' 创建数据库游标 '''
+    cursor = FADB.cursor()
+
+    return cursor
+
+
+def save_data_to_database(data_list, cursor):
     """保存数据
 
     将转化为一维数据表的数据存至数据库
@@ -214,41 +240,15 @@ def save_data_to_database(data_list):
         fields = '(account_period, account_code, name_of_customer_or_supplier, type_of_amount, debit_or_credit, amount)'
         field_values = r'%s, %s, %s, %s, %s, %s'
         
-    ''' 使用 pymysql 创建 MySQL 数据库连接 '''
-    FADB = pymysql.connect(
-        host='127.0.0.1',
-        port=3306,
-        db='finance_information_system',
-        user='root', 
-        password='330715', 
-    )
-
-    ''' 使用 psycopg2 创建 PostgreSQL 数据库连接 '''
-    #FADB = psycopg2.connect(
-    #    host='',
-    #    port='5432',
-    #    database='finance_analysis',
-    #    user='postgres',
-    #    password='330715'
-    #)
-
-    ''' 创建数据库游标 '''
-    cursor = FADB.cursor()
-
     ''' 查询相关数据是否已经保存到了数据库中, 如果返回结果为None，则保存数据；否则提示错误信息 '''
     # cursor.execute() 查询数据是否已在于数据库，0表示不存在
     # cursor.executemany() 用于执行写入数据的 SQL 语句，实现批量写入数据
-    # FADB.commit() 提交数据库操作，保存操作结果
     # result 表示执行结果，用于函数返回值
     if cursor.execute(f'SELECT * FROM { table } WHERE account_period = { data_list[1] }') == 0:
         cursor.executemany(f'INSERT INTO { table } { fields } VALUES ( { field_values } )', data_list[2])
-        FADB.commit()
         result = f"保存成功：{ data_list[1] }期间的<{ data_list[0] }>数据成功写入数据库..."
     else :
         result = f"保存失败：{ data_list[1] }期间的<{ data_list[0] }>数据已存在于数据库中，退出保存过程..."
-
-    ''' 关闭数据库连接 '''
-    FADB.close()
 
     return result
 
@@ -377,13 +377,11 @@ def calculate_value_of_project(rules, account_period, cursor):
     getcontext().prec = 22
 
     ''' 执行 SQL 查询语句，计算财务报表项目的值 '''
-    # 按顺序执行各个项目的计算规则
-    # 如果该项目的计算规则为空则跳过；
-    # 否则按顺序执行各项目的计算规则，
-    # 并对这些项目的值进行求和
+    # 按顺序执行各个项目的计算规则，如果该项目的计算规则为空则跳过
     project_and_his_value = []
     for rule in rules:
         if rule[1]:
+            # 按顺序执行各项目的计算规则，并对这些项目的值进行求和
             value =  Decimal('0')
             for line in rule[1]:
                 cursor.execute(f"SELECT SUM(amount) FROM { line[1] } \
@@ -393,12 +391,16 @@ def calculate_value_of_project(rules, account_period, cursor):
                 if values[0]:
                     value = value + values[0]*line[0]
 
-            project_and_his_value.append([rule[0], value])
+            # 获取项目的项目名称
+            cursor.execute(f"SELECT name_of_project FROM md_project_name_of_financial_statements WHERE number_of_project='{ rule[0] }'")
+            name_of_project = cursor.fetchone()
+
+            project_and_his_value.append([rule[0], name_of_project[0], value.quantize(Decimal('0.00'))])
             
     return project_and_his_value
 
 
-def generate_financial_statements(type_of_fs, account_period):
+def generate_financial_statements(type_of_fs, account_period, cursor):
     """生成财务报表
 
     根据数据库中的数据自动生成财务报表
@@ -421,18 +423,6 @@ def generate_financial_statements(type_of_fs, account_period):
 
     """
 
-    ''' 使用 pymysql 创建 MySQL 数据库连接 '''
-    FADB = pymysql.connect(
-        host='127.0.0.1',
-        port=3306,
-        db='finance_information_system',
-        user='root', 
-        password='330715', 
-    )
-
-    ''' 创建数据库游标 '''
-    cursor = FADB.cursor()
-
     ''' 获取财务报表的项目 '''
     projects = get_projects_of_fs(type_of_fs, cursor)
 
@@ -451,21 +441,3 @@ def generate_financial_statements(type_of_fs, account_period):
         table = "现金流量表"
 
     return [table, account_period, values]
-
-    
-if __name__ == "__main__":
-    ''' 向数据库写入科目余额表数据 '''
-    #print(save_data_to_database(get_trial_balance_data_and_change_format()))
-
-    ''' 向数据库写入客商辅助余额表数据 '''
-    #print(save_data_to_database(get_customers_and_suppliers_balance_data_and_change_format()))
-    
-    ''' 生成财务报表 '''
-    type_of_fs = int(input("可生成财务报表：\n 1  资产负债表\n 2  利润表\n 3  现金流量表\n请输入待生成的财务报表的类型："))
-    account_period = int(input("请输入会计期间："))
-
-    data_of_fs = generate_financial_statements(type_of_fs, account_period)
-
-    print(f"{ data_of_fs[1] }期间的<{ data_of_fs[0] }>的数据如下:")
-    for item in data_of_fs[2]:
-        print(f"{ item[0] } : { item[1] }")
